@@ -1,0 +1,19 @@
+# Personal config (contains tokens and sensitive data)
+~/.tempo-config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Sisyphus internal state
+.sisyphus/
+
+# Editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
