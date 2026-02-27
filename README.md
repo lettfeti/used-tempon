@@ -4,13 +4,14 @@ A Python MCP server that lets you log time to [Tempo](https://tempo.io/) (Jira t
 
 ## What it does
 
-Three MCP tools are exposed:
+Four MCP tools are exposed:
 
 | Tool | Description |
 |------|-------------|
-| `tempo_log_time` | Log time for a date using a named preset (e.g. "usual", "sick", "vacation") |
-| `tempo_get_workload` | Show expected vs. logged hours for a date |
+| `tempo_log_time` | Log time for a date using a named preset; optionally for another person |
+| `tempo_get_workload` | Show expected vs. logged hours for a date; optionally for another person |
 | `tempo_get_config` | Show current configuration (token is redacted) |
+| `tempo_search_user` | Search for a Jira user by display name |
 
 Hours per day come automatically from Tempo's user schedule — respects your contracted hours, not a hardcoded 8h assumption.
 
@@ -82,6 +83,24 @@ To find the numeric ID for an issue:
 - Visit your Jira profile page (click your avatar → Profile)
 - Or call `GET /rest/api/3/myself` — the response includes `"accountId"`
 
+### Optional: Jira credentials for user name search
+
+To log time or check workload for another person by name (e.g. `"log usual for Alice"`),
+add Jira credentials to `~/.tempo-config.json`:
+
+```json
+{
+  "jiraBaseUrl": "https://yourorg.atlassian.net",
+  "jiraEmail": "you@example.com",
+  "jiraToken": "your-jira-api-token"
+}
+```
+
+These fields are **optional**. Without them, you can still log for others by passing their
+Atlassian account ID directly (e.g. `"log usual for 712020:abc123"`).
+
+Get a Jira API token at: https://id.atlassian.com/manage-profile/security/api-tokens
+
 ## Register in Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -122,12 +141,16 @@ Restart Claude Desktop or OpenCode after editing the config.
 Once registered, use natural language in Claude or OpenCode:
 
 ```
-"log usual"                          → logs today using the "usual" preset
-"log sick for yesterday"             → logs sick leave for yesterday
-"log vacation for 2026-03-15"        → logs vacation for a specific date
-"check my workload for today"        → shows logged vs expected hours
-"what's my tempo config?"            → shows configured presets and issue mappings
-"log usual for 2026-02-20 force"     → logs even if entries already exist
+"log usual"                               → logs today using the "usual" preset
+"log sick for yesterday"                  → logs sick leave for yesterday
+"log vacation for 2026-03-15"             → logs vacation for a specific date
+"check my workload for today"             → shows logged vs expected hours
+"what's my tempo config?"                 → shows configured presets and issue mappings
+"log usual for 2026-02-20 force"          → logs even if entries already exist
+"log usual for Alice"                     → logs today for Alice (requires Jira credentials)
+"check workload for Bob Smith"            → checks Bob's workload (requires Jira credentials)
+"search user alice"                       → finds Jira users matching "alice"
+"log sick for 712020:abc123"              → logs for a specific accountId (no Jira creds needed)
 ```
 
 ## Behaviour notes
@@ -136,6 +159,7 @@ Once registered, use natural language in Claude or OpenCode:
 - **Preset splits**: Percentages in each preset are applied to the day's required seconds (e.g. 50/50 on a 6h45m day = 3h22m30s each)
 - **Duplicate detection**: Warns if entries already exist for a date; use `force=True` to log anyway
 - **Weekend/holiday guard**: Warns if Tempo says no hours are required for that day; use `force=True` to override
+- **Cross-user logging**: Pass `person` as a display name (requires Jira credentials) or raw accountId to log/check for someone else
 
 ## File structure
 

@@ -21,20 +21,24 @@ def _check_response(resp: requests.Response) -> None:
         raise TempoAPIError(f"Tempo API error {resp.status_code}: {resp.text}")
 
 
-def get_user_schedule(token: str, date: str) -> dict:
+def get_user_schedule(token: str, date: str, account_id: str = "") -> dict:
     """Get the user's schedule for a single date.
 
     Args:
         token: Tempo API bearer token.
         date: ISO date string (YYYY-MM-DD).
+        account_id: Optional Atlassian account ID. If empty, uses token owner.
 
     Returns:
         Dict with keys: requiredSeconds, type, date.
     """
+    params = {"from": date, "to": date}
+    if account_id:
+        params["accountId"] = account_id
     resp = requests.get(
         f"{BASE_URL}/user-schedule",
         headers=_headers(token),
-        params={"from": date, "to": date},
+        params=params,
     )
     _check_response(resp)
     return resp.json()["results"][0]
@@ -99,6 +103,43 @@ def get_worklogs_for_date(token: str, account_id: str, date: str) -> list[dict]:
     results = resp.json().get("results", [])
     return [
         wl for wl in results if wl.get("author", {}).get("accountId") == account_id
+    ]
+
+
+
+def search_jira_users(jira_base_url: str, jira_email: str, jira_token: str, query: str) -> list[dict]:
+    """Search Jira users by display name.
+
+    Args:
+        jira_base_url: Jira instance base URL (e.g. "https://yourorg.atlassian.net")
+        jira_email: Atlassian account email for Basic Auth
+        jira_token: Jira API token for Basic Auth
+        query: Name search string (e.g. "Alice")
+
+    Returns:
+        List of dicts with keys: accountId, displayName, emailAddress, active
+    """
+    import base64
+    credentials = base64.b64encode(f"{jira_email}:{jira_token}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {credentials}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.get(
+        f"{jira_base_url}/rest/api/3/user/search",
+        headers=headers,
+        params={"query": query, "maxResults": 10},
+    )
+    _check_response(resp)
+    return [
+        {
+            "accountId": u["accountId"],
+            "displayName": u.get("displayName", ""),
+            "emailAddress": u.get("emailAddress", ""),
+            "active": u.get("active", True),
+        }
+        for u in resp.json()
+        if u.get("accountType") == "atlassian"
     ]
 
 

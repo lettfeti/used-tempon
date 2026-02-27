@@ -58,12 +58,62 @@ def parse_date(d: Optional[str]) -> str:
     return d
 
 
+def _resolve_person(person: str) -> tuple[str, str]:
+    """Resolve a person name/accountId to (accountId, display_label).
+
+    Args:
+        person: Raw accountId (contains ':'), display name, or empty string.
+
+    Returns:
+        Tuple of (account_id, display_label)
+
+    Raises:
+        ValueError with a user-friendly message on failure.
+    """
+    if not person:
+        # Default to self
+        return CONFIG["accountId"], "you"
+
+    # Raw accountId passed directly
+    if ":" in person:
+        return person, person
+
+    # Name search — requires Jira credentials in config
+    jira_base_url = CONFIG.get("jiraBaseUrl")
+    jira_email = CONFIG.get("jiraEmail")
+    jira_token = CONFIG.get("jiraToken")
+
+    if not jira_base_url or not jira_email or not jira_token:
+        raise ValueError(
+            f"Cannot search for '{person}' by name — Jira credentials not configured. "
+            "Add 'jiraBaseUrl', 'jiraEmail', and 'jiraToken' to ~/.tempo-config.json. "
+            "Get a Jira API token at: https://id.atlassian.com/manage-profile/security/api-tokens"
+        )
+
+    try:
+        users = tempo_api.search_jira_users(jira_base_url, jira_email, jira_token, person)
+    except tempo_api.TempoAPIError as e:
+        raise ValueError(f"Jira user search failed: {e}")
+
+    active = [u for u in users if u["active"]]
+    if not active:
+        raise ValueError(f"No active Jira user found matching '{person}'.")
+    if len(active) > 1:
+        names = ", ".join(f"{u['displayName']} ({u['emailAddress']})" for u in active)
+        raise ValueError(
+            f"Multiple users match '{person}': {names}. "
+            "Be more specific or pass the accountId directly."
+        )
+    u = active[0]
+    return u["accountId"], u["displayName"]
+
 @mcp.tool()
 def tempo_log_time(
     type: str,
     date: str = "today",
     description: str = "",
     force: bool = False,
+    person: str = "",
 ) -> str:
     """Log time to Tempo using a named preset.
 
@@ -75,6 +125,8 @@ def tempo_log_time(
         date: Date to log for - "today", "yesterday", or YYYY-MM-DD.
         description: Override the default description for all entries.
         force: If True, log even on weekends/holidays or when entries already exist.
+        person: Optional. Name or accountId of the person to log for. Defaults to yourself.
+                If a name is given, Jira credentials must be in config for the search.
 
     Returns:
         Summary of logged worklogs or an error message.
@@ -83,9 +135,13 @@ def tempo_log_time(
         return f"❌ Configuration error: {_CONFIG_ERROR}"
 
     token = CONFIG["tempoToken"]
-    account_id = CONFIG["accountId"]
     presets = CONFIG.get("presets", {})
     parsed_date = parse_date(date)
+
+    try:
+        account_id, person_label = _resolve_person(person)
+    except ValueError as e:
+        return f"❌ {e}"
 
     # Validate preset
     if type not in presets:
@@ -93,7 +149,7 @@ def tempo_log_time(
 
     try:
         # Check required hours
-        schedule = tempo_api.get_user_schedule(token, parsed_date)
+        schedule = tempo_api.get_user_schedule(token, parsed_date, account_id)
         required_seconds = schedule.get("requiredSeconds", 0)
 
         if required_seconds == 0 and not force:
@@ -127,7 +183,8 @@ def tempo_log_time(
             )
 
         total_hours = required_seconds / 3600
-        summary = f"✅ Logged {total_hours}h for {parsed_date}:\n" + "\n".join(logged)
+        for_label = f" for {person_label}" if person_label != "you" else ""
+        summary = f"✅ Logged {total_hours}h{for_label} on {parsed_date}:\n" + "\n".join(logged)
         return summary
 
     except tempo_api.TempoAPIError as e:
@@ -135,13 +192,14 @@ def tempo_log_time(
 
 
 @mcp.tool()
-def tempo_get_workload(date: str = "today") -> str:
+def tempo_get_workload(date: str = "today", person: str = "") -> str:
     """Show logged time vs expected hours for a date.
 
     Use this to check if a day is fully logged or see what's missing.
 
     Args:
         date: Date to check - "today", "yesterday", or YYYY-MM-DD.
+        person: Optional. Name or accountId of the person to check. Defaults to yourself.
 
     Returns:
         Formatted workload summary with expected hours, logged entries, and status.
@@ -150,12 +208,16 @@ def tempo_get_workload(date: str = "today") -> str:
         return f"❌ Configuration error: {_CONFIG_ERROR}"
 
     token = CONFIG["tempoToken"]
-    account_id = CONFIG["accountId"]
     parsed_date = parse_date(date)
 
     try:
+        account_id, person_label = _resolve_person(person)
+    except ValueError as e:
+        return f"❌ {e}"
+
+    try:
         # Get schedule
-        schedule = tempo_api.get_user_schedule(token, parsed_date)
+        schedule = tempo_api.get_user_schedule(token, parsed_date, account_id)
         required_seconds = schedule.get("requiredSeconds", 0)
         day_type = schedule.get("type", "UNKNOWN")
         expected_hours = required_seconds / 3600
@@ -163,8 +225,9 @@ def tempo_get_workload(date: str = "today") -> str:
         # Get existing worklogs
         worklogs = tempo_api.get_worklogs_for_date(token, account_id, parsed_date)
 
+        for_label = f" — {person_label}" if person_label != "you" else ""
         lines = [
-            f"📅 {parsed_date} ({day_type})",
+            f"📅 {parsed_date}{for_label} ({day_type})",
             f"Expected: {expected_hours}h ({required_seconds}s)",
             "",
         ]
@@ -243,6 +306,51 @@ def tempo_get_config() -> str:
         ]
         lines.append(f"  {name}: {', '.join(entry_parts)}")
 
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def tempo_search_user(name: str) -> str:
+    """Search for a Jira/Tempo user by name.
+
+    Use this to find a person's accountId before logging time for them,
+    or just use their name directly in tempo_log_time / tempo_get_workload.
+
+    Args:
+        name: Display name search string (e.g. "Alice", "Smith").
+
+    Returns:
+        List of matching users with accountId and display name.
+    """
+    if _CONFIG_ERROR:
+        return f"❌ Configuration error: {_CONFIG_ERROR}"
+
+    jira_base_url = CONFIG.get("jiraBaseUrl")
+    jira_email = CONFIG.get("jiraEmail")
+    jira_token = CONFIG.get("jiraToken")
+
+    if not jira_base_url or not jira_email or not jira_token:
+        return (
+            "❌ Jira credentials not configured.\n\n"
+            "Add to ~/.tempo-config.json:\n"
+            "  \"jiraBaseUrl\": \"https://yourorg.atlassian.net\",\n"
+            "  \"jiraEmail\": \"you@example.com\",\n"
+            "  \"jiraToken\": \"your-jira-api-token\"\n\n"
+            "Get a Jira API token at: https://id.atlassian.com/manage-profile/security/api-tokens"
+        )
+
+    try:
+        users = tempo_api.search_jira_users(jira_base_url, jira_email, jira_token, name)
+    except tempo_api.TempoAPIError as e:
+        return f"❌ Jira user search failed: {e}"
+
+    active = [u for u in users if u["active"]]
+    if not active:
+        return f"No active users found matching '{name}'."
+
+    lines = [f"Found {len(active)} user(s) matching '{name}':"]
+    for u in active:
+        lines.append(f"  • {u['displayName']} ({u['emailAddress']}) — accountId: {u['accountId']}")
     return "\n".join(lines)
 
 
